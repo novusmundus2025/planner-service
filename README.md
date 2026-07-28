@@ -73,6 +73,11 @@ Run tests:
 python -m unittest discover -s tests
 ```
 
+## Railway Deployment
+
+Railpack reads the repository-root `railpack.json`. It starts Uvicorn on
+`0.0.0.0` and Railway's injected `PORT`, with `8091` as the local fallback.
+
 ## Control Plane Integration
 
 The Rust control plane should call this service only for requests that benefit from
