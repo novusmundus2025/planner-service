@@ -117,6 +117,8 @@ def build_plan(
                 required_output="A concise scope summary and acceptance checklist.",
                 reason="Complex requests need a bounded scope before distributed execution.",
                 preferred_roles=[NodeRole.BATCH],
+                required_role=NodeRole.BATCH,
+                fallback_roles=[execution_role],
             ),
             PlanStep(
                 id="chunk-foundations",
@@ -126,6 +128,8 @@ def build_plan(
                 reason="A bounded responsibility can run independently on a contributor.",
                 depends_on=["scope"],
                 preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
+                required_role=NodeRole.CHUNK_ANALYSIS,
+                fallback_roles=[NodeRole.BATCH, execution_role],
             ),
             PlanStep(
                 id="chunk-developments",
@@ -135,6 +139,8 @@ def build_plan(
                 reason="Independent analysis enables parallel contributor execution.",
                 depends_on=["scope"],
                 preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
+                required_role=NodeRole.CHUNK_ANALYSIS,
+                fallback_roles=[NodeRole.BATCH, execution_role],
             ),
             PlanStep(
                 id="chunk-impact",
@@ -144,6 +150,8 @@ def build_plan(
                 reason="A separate responsibility improves coverage before reduction.",
                 depends_on=["scope"],
                 preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
+                required_role=NodeRole.CHUNK_ANALYSIS,
+                fallback_roles=[NodeRole.BATCH, execution_role],
             ),
             PlanStep(
                 id="reduce",
@@ -153,6 +161,9 @@ def build_plan(
                 reason="Reduction controls context size and removes conflicts before synthesis.",
                 depends_on=["chunk-foundations", "chunk-developments", "chunk-impact"],
                 preferred_roles=[NodeRole.REDUCER],
+                required_role=NodeRole.REDUCER,
+                unavailable_timeout_seconds=60,
+                on_unavailable="preserve_chunks_and_degrade",
             ),
             PlanStep(
                 id="synthesize",
@@ -162,6 +173,9 @@ def build_plan(
                 reason="Synthesis converts accepted reduced findings into the client response.",
                 depends_on=["reduce"],
                 preferred_roles=[NodeRole.SYNTHESIZER],
+                required_role=NodeRole.SYNTHESIZER,
+                unavailable_timeout_seconds=60,
+                on_unavailable="preserve_reduction_and_degrade",
             ),
         ]
     else:
@@ -173,6 +187,7 @@ def build_plan(
                 required_output="Final answer ready for the requesting client.",
                 reason="Simple requests do not need graph decomposition.",
                 preferred_roles=[NodeRole(requirements["preferred_roles"][0])],
+                required_role=NodeRole(requirements["preferred_roles"][0]),
             )
         ]
 
@@ -183,6 +198,12 @@ def build_plan(
             for step in steps
             for dependency in step.depends_on
         ],
+        "execution_policy": {
+            "role_matching": "required",
+            "preserve_completed_outputs": True,
+            "unavailable_status": "degraded",
+            "retryable": True,
+        },
     }
     status = PlannerStatus.DEGRADED if degraded_reason else PlannerStatus.PLANNED
     return PlanResponse(
