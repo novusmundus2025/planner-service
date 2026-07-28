@@ -77,6 +77,8 @@ python -m unittest discover -s tests
 
 Railpack reads the repository-root `railpack.json`. It starts Uvicorn on
 `0.0.0.0` and Railway's injected `PORT`, with `8091` as the local fallback.
+The root `requirements.txt` instructs Railpack's pip provider to install the
+local project and all dependencies declared in `pyproject.toml`.
 
 ## Control Plane Integration
 
