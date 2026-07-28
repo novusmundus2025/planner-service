@@ -46,7 +46,14 @@ class PlannerTests(unittest.TestCase):
         )
         synth = response.graph["nodes"][-1]
         self.assertEqual(synth["preferred_roles"], ["synthesizer"])
+        self.assertEqual(synth["required_role"], "synthesizer")
+        self.assertEqual(synth["fallback_roles"], [])
+        self.assertEqual(synth["on_unavailable"], "preserve_reduction_and_degrade")
         self.assertEqual(synth["depends_on"], ["reduce"])
+        reducer = response.graph["nodes"][-2]
+        self.assertEqual(reducer["required_role"], "reducer")
+        self.assertEqual(reducer["on_unavailable"], "preserve_chunks_and_degrade")
+        self.assertTrue(response.graph["execution_policy"]["preserve_completed_outputs"])
         self.assertEqual(response.scheduling_requirements["model"], "qwen")
         self.assertIn("coding", response.scheduling_requirements["preferred_roles"])
 

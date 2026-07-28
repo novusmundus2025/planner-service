@@ -48,8 +48,22 @@ Response:
     "steps": []
   },
   "graph": {
-    "nodes": [],
-    "edges": []
+    "nodes": [
+      {
+        "id": "reduce",
+        "required_role": "reducer",
+        "fallback_roles": [],
+        "unavailable_timeout_seconds": 60,
+        "on_unavailable": "preserve_chunks_and_degrade"
+      }
+    ],
+    "edges": [],
+    "execution_policy": {
+      "role_matching": "required",
+      "preserve_completed_outputs": true,
+      "unavailable_status": "degraded",
+      "retryable": true
+    }
   },
   "scheduling_requirements": {}
 }
@@ -85,3 +99,6 @@ local project and all dependencies declared in `pyproject.toml`.
 The Rust control plane should call this service only for requests that benefit from
 multi-step planning. If the call fails, times out, or returns `planner_status=degraded`,
 Rust should use its built-in fallback planner and record planner metadata on the job.
+The planner declares required roles and unavailable-stage policy, but it never selects
+a live machine. The control plane scheduler enforces those requirements and reports
+runtime degradation.

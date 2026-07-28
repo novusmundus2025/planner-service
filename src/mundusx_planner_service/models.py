@@ -53,9 +53,13 @@ class PlanStep:
     reason: str
     depends_on: list[str] = field(default_factory=list)
     preferred_roles: list[NodeRole] = field(default_factory=list)
+    required_role: NodeRole | None = None
+    fallback_roles: list[NodeRole] = field(default_factory=list)
+    unavailable_timeout_seconds: int = 60
+    on_unavailable: str = "fail_with_degradation"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
             "name": self.name,
             "responsibility": self.responsibility,
@@ -63,7 +67,13 @@ class PlanStep:
             "reason": self.reason,
             "depends_on": list(self.depends_on),
             "preferred_roles": [role.value for role in self.preferred_roles],
+            "fallback_roles": [role.value for role in self.fallback_roles],
+            "unavailable_timeout_seconds": self.unavailable_timeout_seconds,
+            "on_unavailable": self.on_unavailable,
         }
+        if self.required_role:
+            payload["required_role"] = self.required_role.value
+        return payload
 
 
 @dataclass(frozen=True)
