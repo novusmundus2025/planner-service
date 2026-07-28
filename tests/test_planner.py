@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,6 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from mundusx_planner_service.models import PlanRequest  # noqa: E402
 from mundusx_planner_service.planner import deterministic_plan, plan_request  # noqa: E402
+from mundusx_planner_service.workflow import langgraph_plan  # noqa: E402
 
 
 class PlannerTests(unittest.TestCase):
@@ -22,7 +24,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(response.graph["nodes"][0]["id"], "execute")
         self.assertIn("chat", response.scheduling_requirements["preferred_roles"])
 
-    def test_coding_request_gets_scope_execute_reduce_graph(self):
+    def test_coding_request_gets_parallel_chunks_reduce_and_synthesis(self):
         response = deterministic_plan(
             PlanRequest(
                 request_id="req-2",
@@ -31,13 +33,37 @@ class PlannerTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual([node["id"] for node in response.graph["nodes"]], ["scope", "execute", "reduce"])
         self.assertEqual(
-            response.graph["edges"],
-            [{"from": "scope", "to": "execute"}, {"from": "execute", "to": "reduce"}],
+            [node["id"] for node in response.graph["nodes"]],
+            [
+                "scope",
+                "chunk-foundations",
+                "chunk-developments",
+                "chunk-impact",
+                "reduce",
+                "synthesize",
+            ],
         )
+        synth = response.graph["nodes"][-1]
+        self.assertEqual(synth["preferred_roles"], ["synthesizer"])
+        self.assertEqual(synth["depends_on"], ["reduce"])
         self.assertEqual(response.scheduling_requirements["model"], "qwen")
         self.assertIn("coding", response.scheduling_requirements["preferred_roles"])
+
+    def test_detailed_history_is_decomposed_even_when_prompt_is_short(self):
+        response = deterministic_plan(
+            PlanRequest(
+                request_id="req-history",
+                prompt="Give me a detailed history of the European Union.",
+            )
+        )
+
+        self.assertEqual(response.graph["nodes"][-2]["id"], "reduce")
+        self.assertEqual(response.graph["nodes"][-1]["id"], "synthesize")
+        self.assertEqual(
+            response.graph["nodes"][1]["preferred_roles"][0],
+            "chunk_analysis",
+        )
 
     def test_modality_requirements_are_inferred(self):
         response = deterministic_plan(
@@ -67,6 +93,19 @@ class PlannerTests(unittest.TestCase):
 
         self.assertEqual(response.planner_provider, "deterministic")
         self.assertEqual(response.planner_status, "planned")
+
+    @unittest.skipUnless(find_spec("langgraph"), "langgraph dependency is not installed")
+    def test_langgraph_workflow_runs_multistage_plan(self):
+        response = langgraph_plan(
+            PlanRequest(
+                request_id="req-langgraph",
+                prompt="Give me a detailed history of the European Union.",
+            )
+        )
+
+        self.assertEqual(response.planner_provider, "langgraph")
+        self.assertEqual(response.planner_status, "planned")
+        self.assertEqual(response.graph["nodes"][-1]["id"], "synthesize")
 
 
 if __name__ == "__main__":

@@ -9,10 +9,15 @@ requests and returns a portable job graph that the Rust scheduler can execute.
 ## Responsibilities
 
 - Classify request shape and required capabilities.
-- Split complex work into graph nodes.
-- Mark reducer steps for multi-node jobs.
+- Split complex work into parallel responsibility chunks.
+- Create explicit reducer and final synthesizer steps for multi-node jobs.
 - Return scheduler requirements such as role, modality, context, and tool needs.
 - Fall back to deterministic planning when LangGraph is unavailable or disabled.
+
+The LangGraph workflow has separate classification, decomposition, and graph
+validation stages. The returned graph is portable: the Rust control plane
+remains responsible for persistence and selects a contributor for every ready
+step.
 
 ## API
 

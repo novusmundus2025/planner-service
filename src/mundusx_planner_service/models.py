@@ -28,7 +28,9 @@ class NodeRole(StrEnum):
     VISION = "vision"
     EMBEDDING = "embedding"
     TOOL_USE = "tool_use"
+    CHUNK_ANALYSIS = "chunk_analysis"
     REDUCER = "reducer"
+    SYNTHESIZER = "synthesizer"
     BATCH = "batch"
 
 

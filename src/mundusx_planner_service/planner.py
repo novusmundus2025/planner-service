@@ -78,12 +78,37 @@ def infer_requirements(request: PlanRequest, task_type: TaskType) -> dict[str, o
     }
 
 
-def deterministic_plan(request: PlanRequest, degraded_reason: str | None = None) -> PlanResponse:
-    task_type = classify_task(request.prompt)
-    requirements = infer_requirements(request, task_type)
-    complex_request = len(request.prompt) > 2000 or task_type in {TaskType.CODING, TaskType.DOCUMENT}
+def should_decompose(request: PlanRequest, task_type: TaskType) -> bool:
+    normalized = request.prompt.lower()
+    return (
+        len(request.prompt) > 2000
+        or task_type in {TaskType.CODING, TaskType.DOCUMENT}
+        or _contains_any(
+            normalized,
+            [
+                "detailed history",
+                "comprehensive",
+                "in depth",
+                "in-depth",
+                "covering its",
+                "compare and contrast",
+                "multiple perspectives",
+            ],
+        )
+    )
+
+
+def build_plan(
+    request: PlanRequest,
+    task_type: TaskType,
+    requirements: dict[str, object],
+    provider: PlannerProvider,
+    degraded_reason: str | None = None,
+) -> PlanResponse:
+    complex_request = should_decompose(request, task_type)
 
     if complex_request:
+        execution_role = NodeRole(requirements["preferred_roles"][0])
         steps = [
             PlanStep(
                 id="scope",
@@ -94,22 +119,49 @@ def deterministic_plan(request: PlanRequest, degraded_reason: str | None = None)
                 preferred_roles=[NodeRole.BATCH],
             ),
             PlanStep(
-                id="execute",
-                name="Execute work",
-                responsibility="Perform the primary implementation or analysis task.",
-                required_output="Task result with enough detail for verification.",
-                reason="The main task can be assigned to the best matching worker node.",
+                id="chunk-foundations",
+                name="Analyze foundations",
+                responsibility="chunk_analysis",
+                required_output="Evidence-backed findings about origins, foundations, and context.",
+                reason="A bounded responsibility can run independently on a contributor.",
                 depends_on=["scope"],
-                preferred_roles=[NodeRole(requirements["preferred_roles"][0])],
+                preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
+            ),
+            PlanStep(
+                id="chunk-developments",
+                name="Analyze major developments",
+                responsibility="chunk_analysis",
+                required_output="Evidence-backed findings about major developments and turning points.",
+                reason="Independent analysis enables parallel contributor execution.",
+                depends_on=["scope"],
+                preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
+            ),
+            PlanStep(
+                id="chunk-impact",
+                name="Analyze outcomes and current impact",
+                responsibility="chunk_analysis",
+                required_output="Evidence-backed findings about outcomes, implications, and current state.",
+                reason="A separate responsibility improves coverage before reduction.",
+                depends_on=["scope"],
+                preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
             ),
             PlanStep(
                 id="reduce",
-                name="Reduce final answer",
-                responsibility="Merge outputs, remove duplication, and produce final response.",
-                required_output="Final answer ready for the requesting client.",
-                reason="Reducer step keeps the final response coherent after chunked work.",
-                depends_on=["execute"],
+                name="Reduce partial results",
+                responsibility="reduce",
+                required_output="A deduplicated, ordered set of accepted findings.",
+                reason="Reduction controls context size and removes conflicts before synthesis.",
+                depends_on=["chunk-foundations", "chunk-developments", "chunk-impact"],
                 preferred_roles=[NodeRole.REDUCER],
+            ),
+            PlanStep(
+                id="synthesize",
+                name="Synthesize final answer",
+                responsibility="synthesize",
+                required_output="One coherent final answer that satisfies the original request.",
+                reason="Synthesis converts accepted reduced findings into the client response.",
+                depends_on=["reduce"],
+                preferred_roles=[NodeRole.SYNTHESIZER],
             ),
         ]
     else:
@@ -133,7 +185,6 @@ def deterministic_plan(request: PlanRequest, degraded_reason: str | None = None)
         ],
     }
     status = PlannerStatus.DEGRADED if degraded_reason else PlannerStatus.PLANNED
-    provider = PlannerProvider.DETERMINISTIC
     return PlanResponse(
         request_id=request.request_id,
         planner_provider=provider,
@@ -145,6 +196,18 @@ def deterministic_plan(request: PlanRequest, degraded_reason: str | None = None)
         graph=graph,
         scheduling_requirements=requirements,
         degraded_reason=degraded_reason,
+    )
+
+
+def deterministic_plan(request: PlanRequest, degraded_reason: str | None = None) -> PlanResponse:
+    task_type = classify_task(request.prompt)
+    requirements = infer_requirements(request, task_type)
+    return build_plan(
+        request,
+        task_type,
+        requirements,
+        PlannerProvider.DETERMINISTIC,
+        degraded_reason,
     )
 
 
