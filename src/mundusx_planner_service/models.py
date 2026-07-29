@@ -55,6 +55,8 @@ class PlanStep:
     preferred_roles: list[NodeRole] = field(default_factory=list)
     required_role: NodeRole | None = None
     fallback_roles: list[NodeRole] = field(default_factory=list)
+    recommended_max_tokens: int | None = None
+    minimum_max_tokens: int | None = None
     unavailable_timeout_seconds: int = 60
     on_unavailable: str = "fail_with_degradation"
 
@@ -71,6 +73,10 @@ class PlanStep:
             "unavailable_timeout_seconds": self.unavailable_timeout_seconds,
             "on_unavailable": self.on_unavailable,
         }
+        if self.recommended_max_tokens is not None:
+            payload["recommended_max_tokens"] = self.recommended_max_tokens
+        if self.minimum_max_tokens is not None:
+            payload["minimum_max_tokens"] = self.minimum_max_tokens
         if self.required_role:
             payload["required_role"] = self.required_role.value
         return payload
