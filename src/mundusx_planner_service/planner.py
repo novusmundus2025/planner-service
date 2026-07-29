@@ -98,6 +98,45 @@ def should_decompose(request: PlanRequest, task_type: TaskType) -> bool:
     )
 
 
+def output_budget_profile(request: PlanRequest, task_type: TaskType) -> dict[str, int]:
+    normalized = request.prompt.lower()
+    long_form = _contains_any(
+        normalized,
+        [
+            "detailed history",
+            "comprehensive",
+            "in detail",
+            "in-depth",
+            "deep dive",
+            "full history",
+            "report",
+            "timeline",
+            "write an article",
+        ],
+    )
+    concise = _contains_any(
+        normalized,
+        ["briefly", "concise", "short answer", "one paragraph", "summarize briefly"],
+    )
+
+    if task_type is TaskType.CODING:
+        final = 3072
+    elif long_form:
+        final = 3072
+    elif concise:
+        final = 512
+    else:
+        final = 1536
+
+    return {
+        "scope": 384,
+        "chunk": min(1024, max(512, final // 4)),
+        "reduce": min(3072, max(1024, final // 2)),
+        "synthesize": final,
+        "direct": final,
+    }
+
+
 def build_plan(
     request: PlanRequest,
     task_type: TaskType,
@@ -106,6 +145,7 @@ def build_plan(
     degraded_reason: str | None = None,
 ) -> PlanResponse:
     complex_request = should_decompose(request, task_type)
+    budgets = output_budget_profile(request, task_type)
 
     if complex_request:
         execution_role = NodeRole(requirements["preferred_roles"][0])
@@ -119,6 +159,8 @@ def build_plan(
                 preferred_roles=[NodeRole.BATCH],
                 required_role=NodeRole.BATCH,
                 fallback_roles=[execution_role],
+                recommended_max_tokens=budgets["scope"],
+                minimum_max_tokens=256,
             ),
             PlanStep(
                 id="chunk-foundations",
@@ -130,6 +172,8 @@ def build_plan(
                 preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
                 required_role=NodeRole.CHUNK_ANALYSIS,
                 fallback_roles=[NodeRole.BATCH, execution_role],
+                recommended_max_tokens=budgets["chunk"],
+                minimum_max_tokens=384,
             ),
             PlanStep(
                 id="chunk-developments",
@@ -141,6 +185,8 @@ def build_plan(
                 preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
                 required_role=NodeRole.CHUNK_ANALYSIS,
                 fallback_roles=[NodeRole.BATCH, execution_role],
+                recommended_max_tokens=budgets["chunk"],
+                minimum_max_tokens=384,
             ),
             PlanStep(
                 id="chunk-impact",
@@ -152,6 +198,8 @@ def build_plan(
                 preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
                 required_role=NodeRole.CHUNK_ANALYSIS,
                 fallback_roles=[NodeRole.BATCH, execution_role],
+                recommended_max_tokens=budgets["chunk"],
+                minimum_max_tokens=384,
             ),
             PlanStep(
                 id="reduce",
@@ -162,6 +210,8 @@ def build_plan(
                 depends_on=["chunk-foundations", "chunk-developments", "chunk-impact"],
                 preferred_roles=[NodeRole.REDUCER],
                 required_role=NodeRole.REDUCER,
+                recommended_max_tokens=budgets["reduce"],
+                minimum_max_tokens=768,
                 unavailable_timeout_seconds=60,
                 on_unavailable="preserve_chunks_and_degrade",
             ),
@@ -174,6 +224,8 @@ def build_plan(
                 depends_on=["reduce"],
                 preferred_roles=[NodeRole.SYNTHESIZER],
                 required_role=NodeRole.SYNTHESIZER,
+                recommended_max_tokens=budgets["synthesize"],
+                minimum_max_tokens=1024,
                 unavailable_timeout_seconds=60,
                 on_unavailable="preserve_reduction_and_degrade",
             ),
@@ -188,6 +240,8 @@ def build_plan(
                 reason="Simple requests do not need graph decomposition.",
                 preferred_roles=[NodeRole(requirements["preferred_roles"][0])],
                 required_role=NodeRole(requirements["preferred_roles"][0]),
+                recommended_max_tokens=budgets["direct"],
+                minimum_max_tokens=min(512, budgets["direct"]),
             )
         ]
 

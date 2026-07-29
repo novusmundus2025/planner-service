@@ -50,8 +50,11 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(synth["fallback_roles"], [])
         self.assertEqual(synth["on_unavailable"], "preserve_reduction_and_degrade")
         self.assertEqual(synth["depends_on"], ["reduce"])
+        self.assertGreaterEqual(synth["recommended_max_tokens"], 2048)
+        self.assertEqual(synth["minimum_max_tokens"], 1024)
         reducer = response.graph["nodes"][-2]
         self.assertEqual(reducer["required_role"], "reducer")
+        self.assertGreaterEqual(reducer["recommended_max_tokens"], 1024)
         self.assertEqual(reducer["on_unavailable"], "preserve_chunks_and_degrade")
         self.assertTrue(response.graph["execution_policy"]["preserve_completed_outputs"])
         self.assertEqual(response.scheduling_requirements["model"], "qwen")
@@ -67,6 +70,14 @@ class PlannerTests(unittest.TestCase):
 
         self.assertEqual(response.graph["nodes"][-2]["id"], "reduce")
         self.assertEqual(response.graph["nodes"][-1]["id"], "synthesize")
+        self.assertEqual(
+            response.graph["nodes"][-1]["recommended_max_tokens"],
+            3072,
+        )
+        self.assertGreater(
+            response.graph["nodes"][-1]["recommended_max_tokens"],
+            response.graph["nodes"][1]["recommended_max_tokens"],
+        )
         self.assertEqual(
             response.graph["nodes"][1]["preferred_roles"][0],
             "chunk_analysis",
