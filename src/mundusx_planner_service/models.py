@@ -55,6 +55,9 @@ class PlanStep:
     preferred_roles: list[NodeRole] = field(default_factory=list)
     required_role: NodeRole | None = None
     fallback_roles: list[NodeRole] = field(default_factory=list)
+    expected_artifact_types: list[str] = field(default_factory=list)
+    artifact_targets: list[str] = field(default_factory=list)
+    max_input_artifacts: int | None = None
     recommended_max_tokens: int | None = None
     minimum_max_tokens: int | None = None
     unavailable_timeout_seconds: int = 60
@@ -72,7 +75,11 @@ class PlanStep:
             "fallback_roles": [role.value for role in self.fallback_roles],
             "unavailable_timeout_seconds": self.unavailable_timeout_seconds,
             "on_unavailable": self.on_unavailable,
+            "expected_artifact_types": list(self.expected_artifact_types),
+            "artifact_targets": list(self.artifact_targets),
         }
+        if self.max_input_artifacts is not None:
+            payload["max_input_artifacts"] = self.max_input_artifacts
         if self.recommended_max_tokens is not None:
             payload["recommended_max_tokens"] = self.recommended_max_tokens
         if self.minimum_max_tokens is not None:

@@ -145,6 +145,7 @@ def build_plan(
     degraded_reason: str | None = None,
 ) -> PlanResponse:
     complex_request = should_decompose(request, task_type)
+    coding_request = task_type == TaskType.CODING
     budgets = output_budget_profile(request, task_type)
 
     if complex_request:
@@ -161,6 +162,7 @@ def build_plan(
                 fallback_roles=[execution_role],
                 recommended_max_tokens=budgets["scope"],
                 minimum_max_tokens=256,
+                expected_artifact_types=["structured_data"],
             ),
             PlanStep(
                 id="chunk-foundations",
@@ -174,6 +176,8 @@ def build_plan(
                 fallback_roles=[NodeRole.BATCH, execution_role],
                 recommended_max_tokens=budgets["chunk"],
                 minimum_max_tokens=384,
+                expected_artifact_types=["code", "patch"] if coding_request else ["text"],
+                artifact_targets=["implementation"] if coding_request else [],
             ),
             PlanStep(
                 id="chunk-developments",
@@ -187,6 +191,8 @@ def build_plan(
                 fallback_roles=[NodeRole.BATCH, execution_role],
                 recommended_max_tokens=budgets["chunk"],
                 minimum_max_tokens=384,
+                expected_artifact_types=["code", "patch"] if coding_request else ["text"],
+                artifact_targets=["tests"] if coding_request else [],
             ),
             PlanStep(
                 id="chunk-impact",
@@ -200,6 +206,8 @@ def build_plan(
                 fallback_roles=[NodeRole.BATCH, execution_role],
                 recommended_max_tokens=budgets["chunk"],
                 minimum_max_tokens=384,
+                expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
+                artifact_targets=["integration", "documentation"] if coding_request else [],
             ),
             PlanStep(
                 id="reduce",
@@ -214,6 +222,8 @@ def build_plan(
                 minimum_max_tokens=768,
                 unavailable_timeout_seconds=60,
                 on_unavailable="preserve_chunks_and_degrade",
+                expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
+                max_input_artifacts=20,
             ),
             PlanStep(
                 id="synthesize",
@@ -228,6 +238,8 @@ def build_plan(
                 minimum_max_tokens=1024,
                 unavailable_timeout_seconds=60,
                 on_unavailable="preserve_reduction_and_degrade",
+                expected_artifact_types=["code", "patch", "command", "test_report"] if coding_request else ["text"],
+                max_input_artifacts=20,
             ),
         ]
     else:
@@ -242,6 +254,7 @@ def build_plan(
                 required_role=NodeRole(requirements["preferred_roles"][0]),
                 recommended_max_tokens=budgets["direct"],
                 minimum_max_tokens=min(512, budgets["direct"]),
+                expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
             )
         ]
 
@@ -257,6 +270,10 @@ def build_plan(
             "preserve_completed_outputs": True,
             "unavailable_status": "degraded",
             "retryable": True,
+            "result_protocol": "artifact_manifest_v1",
+            "artifact_batch_max_items": 20,
+            "artifact_batch_max_bytes": 65536,
+            "conflict_policy": "report_without_silent_overwrite",
         },
     }
     status = PlannerStatus.DEGRADED if degraded_reason else PlannerStatus.PLANNED

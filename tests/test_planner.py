@@ -57,6 +57,11 @@ class PlannerTests(unittest.TestCase):
         self.assertGreaterEqual(reducer["recommended_max_tokens"], 1024)
         self.assertEqual(reducer["on_unavailable"], "preserve_chunks_and_degrade")
         self.assertTrue(response.graph["execution_policy"]["preserve_completed_outputs"])
+        self.assertEqual(response.graph["execution_policy"]["result_protocol"], "artifact_manifest_v1")
+        self.assertEqual(reducer["max_input_artifacts"], 20)
+        self.assertIn("patch", synth["expected_artifact_types"])
+        self.assertEqual(response.graph["nodes"][1]["artifact_targets"], ["implementation"])
+        self.assertEqual(response.graph["nodes"][2]["artifact_targets"], ["tests"])
         self.assertEqual(response.scheduling_requirements["model"], "qwen")
         self.assertIn("coding", response.scheduling_requirements["preferred_roles"])
 
