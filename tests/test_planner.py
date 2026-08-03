@@ -56,6 +56,16 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(reducer["required_role"], "reducer")
         self.assertGreaterEqual(reducer["recommended_max_tokens"], 1024)
         self.assertEqual(reducer["on_unavailable"], "preserve_chunks_and_degrade")
+        self.assertEqual(reducer["minimum_capacity_class"], "performance")
+        self.assertEqual(reducer["recommended_capacity_class"], "heavy")
+        self.assertEqual(reducer["reducer_credibility"], "high")
+        self.assertEqual(synth["minimum_capacity_class"], "heavy")
+        self.assertEqual(synth["recommended_capacity_class"], "synthesis")
+        self.assertEqual(synth["synthesizer_credibility"], "high")
+        coding_step = response.graph["nodes"][1]
+        self.assertTrue(coding_step["requires_repository"])
+        self.assertEqual(coding_step["validation_level"], "syntax")
+        self.assertGreaterEqual(coding_step["context_budget_tokens"], 8192)
         self.assertTrue(response.graph["execution_policy"]["preserve_completed_outputs"])
         self.assertEqual(response.graph["execution_policy"]["result_protocol"], "artifact_manifest_v1")
         self.assertEqual(reducer["max_input_artifacts"], 20)
@@ -102,6 +112,18 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("vision", response.scheduling_requirements["preferred_roles"])
         self.assertIn("embedding", response.scheduling_requirements["preferred_roles"])
         self.assertIn("tool_use", response.scheduling_requirements["preferred_roles"])
+
+    def test_bounded_single_file_coding_step_fits_standard_capacity(self):
+        response = deterministic_plan(
+            PlanRequest(request_id="req-bounded", prompt="Fix this code bug")
+        )
+
+        step = response.graph["nodes"][0]
+        self.assertEqual(step["minimum_capacity_class"], "micro")
+        self.assertEqual(step["recommended_capacity_class"], "standard")
+        self.assertTrue(step["requires_repository"])
+        self.assertEqual(step["model_quality_floor"], "coding")
+        self.assertLessEqual(step["expected_artifact_bytes"], 262144)
 
     def test_plan_request_can_force_deterministic_engine(self):
         previous = os.environ.get("MUNDUSX_PLANNER_ENGINE")
