@@ -34,6 +34,22 @@ class NodeRole(StrEnum):
     BATCH = "batch"
 
 
+class CapacityClass(StrEnum):
+    MICRO = "micro"
+    STANDARD = "standard"
+    PERFORMANCE = "performance"
+    HEAVY = "heavy"
+    SYNTHESIS = "synthesis"
+    SERVER = "server"
+
+
+class ValidationLevel(StrEnum):
+    STRUCTURAL = "structural"
+    SYNTAX = "syntax"
+    COMPILE = "compile"
+    TEST = "test"
+
+
 @dataclass(frozen=True)
 class PlanRequest:
     request_id: str
@@ -62,6 +78,20 @@ class PlanStep:
     minimum_max_tokens: int | None = None
     unavailable_timeout_seconds: int = 60
     on_unavailable: str = "fail_with_degradation"
+    minimum_capacity_class: CapacityClass = CapacityClass.MICRO
+    recommended_capacity_class: CapacityClass = CapacityClass.STANDARD
+    context_budget_tokens: int = 2048
+    expected_artifact_count: int = 1
+    expected_artifact_bytes: int = 65536
+    model_quality_floor: str = "baseline"
+    required_tools: list[str] = field(default_factory=list)
+    requires_repository: bool = False
+    requires_compile: bool = False
+    requires_tests: bool = False
+    validation_level: ValidationLevel = ValidationLevel.STRUCTURAL
+    allowed_parallelism: int = 1
+    reducer_credibility: str = "standard"
+    synthesizer_credibility: str = "standard"
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -77,6 +107,20 @@ class PlanStep:
             "on_unavailable": self.on_unavailable,
             "expected_artifact_types": list(self.expected_artifact_types),
             "artifact_targets": list(self.artifact_targets),
+            "minimum_capacity_class": self.minimum_capacity_class.value,
+            "recommended_capacity_class": self.recommended_capacity_class.value,
+            "context_budget_tokens": self.context_budget_tokens,
+            "expected_artifact_count": self.expected_artifact_count,
+            "expected_artifact_bytes": self.expected_artifact_bytes,
+            "model_quality_floor": self.model_quality_floor,
+            "required_tools": list(self.required_tools),
+            "requires_repository": self.requires_repository,
+            "requires_compile": self.requires_compile,
+            "requires_tests": self.requires_tests,
+            "validation_level": self.validation_level.value,
+            "allowed_parallelism": self.allowed_parallelism,
+            "reducer_credibility": self.reducer_credibility,
+            "synthesizer_credibility": self.synthesizer_credibility,
         }
         if self.max_input_artifacts is not None:
             payload["max_input_artifacts"] = self.max_input_artifacts

@@ -4,6 +4,7 @@ import os
 from collections.abc import Iterable
 
 from .models import (
+    CapacityClass,
     NodeRole,
     PlanRequest,
     PlanResponse,
@@ -11,6 +12,7 @@ from .models import (
     PlannerStatus,
     PlanStep,
     TaskType,
+    ValidationLevel,
 )
 
 
@@ -82,7 +84,21 @@ def should_decompose(request: PlanRequest, task_type: TaskType) -> bool:
     normalized = request.prompt.lower()
     return (
         len(request.prompt) > 2000
-        or task_type in {TaskType.CODING, TaskType.DOCUMENT}
+        or task_type is TaskType.DOCUMENT
+        or (
+            task_type is TaskType.CODING
+            and _contains_any(
+                normalized,
+                [
+                    "refactor",
+                    "add tests",
+                    "multiple files",
+                    "entire repository",
+                    "new feature",
+                    "implement",
+                ],
+            )
+        )
         or _contains_any(
             normalized,
             [
@@ -147,6 +163,7 @@ def build_plan(
     complex_request = should_decompose(request, task_type)
     coding_request = task_type == TaskType.CODING
     budgets = output_budget_profile(request, task_type)
+    coding = task_type is TaskType.CODING
 
     if complex_request:
         execution_role = NodeRole(requirements["preferred_roles"][0])
@@ -163,6 +180,11 @@ def build_plan(
                 recommended_max_tokens=budgets["scope"],
                 minimum_max_tokens=256,
                 expected_artifact_types=["structured_data"],
+                minimum_capacity_class=CapacityClass.MICRO,
+                recommended_capacity_class=CapacityClass.STANDARD,
+                context_budget_tokens=4096,
+                validation_level=ValidationLevel.STRUCTURAL,
+                allowed_parallelism=1,
             ),
             PlanStep(
                 id="chunk-foundations",
@@ -178,6 +200,15 @@ def build_plan(
                 minimum_max_tokens=384,
                 expected_artifact_types=["code", "patch"] if coding_request else ["text"],
                 artifact_targets=["implementation"] if coding_request else [],
+                minimum_capacity_class=CapacityClass.STANDARD,
+                recommended_capacity_class=CapacityClass.PERFORMANCE,
+                context_budget_tokens=8192,
+                expected_artifact_bytes=262144,
+                model_quality_floor="coding" if coding else "baseline",
+                required_tools=["repository"] if coding else [],
+                requires_repository=coding,
+                validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
+                allowed_parallelism=3,
             ),
             PlanStep(
                 id="chunk-developments",
@@ -193,6 +224,15 @@ def build_plan(
                 minimum_max_tokens=384,
                 expected_artifact_types=["code", "patch"] if coding_request else ["text"],
                 artifact_targets=["tests"] if coding_request else [],
+                minimum_capacity_class=CapacityClass.STANDARD,
+                recommended_capacity_class=CapacityClass.PERFORMANCE,
+                context_budget_tokens=8192,
+                expected_artifact_bytes=262144,
+                model_quality_floor="coding" if coding else "baseline",
+                required_tools=["repository"] if coding else [],
+                requires_repository=coding,
+                validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
+                allowed_parallelism=3,
             ),
             PlanStep(
                 id="chunk-impact",
@@ -208,6 +248,16 @@ def build_plan(
                 minimum_max_tokens=384,
                 expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
                 artifact_targets=["integration", "documentation"] if coding_request else [],
+                minimum_capacity_class=CapacityClass.STANDARD,
+                recommended_capacity_class=CapacityClass.PERFORMANCE,
+                context_budget_tokens=8192,
+                expected_artifact_bytes=262144,
+                model_quality_floor="coding" if coding else "baseline",
+                required_tools=["repository", "test"] if coding else [],
+                requires_repository=coding,
+                requires_tests=coding,
+                validation_level=ValidationLevel.TEST if coding else ValidationLevel.STRUCTURAL,
+                allowed_parallelism=3,
             ),
             PlanStep(
                 id="reduce",
@@ -224,6 +274,15 @@ def build_plan(
                 on_unavailable="preserve_chunks_and_degrade",
                 expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
                 max_input_artifacts=20,
+                minimum_capacity_class=CapacityClass.PERFORMANCE,
+                recommended_capacity_class=CapacityClass.HEAVY,
+                context_budget_tokens=16384,
+                expected_artifact_count=3,
+                expected_artifact_bytes=1048576,
+                model_quality_floor="strong",
+                validation_level=ValidationLevel.STRUCTURAL,
+                reducer_credibility="high",
+                synthesizer_credibility="high",
             ),
             PlanStep(
                 id="synthesize",
@@ -240,6 +299,15 @@ def build_plan(
                 on_unavailable="preserve_reduction_and_degrade",
                 expected_artifact_types=["code", "patch", "command", "test_report"] if coding_request else ["text"],
                 max_input_artifacts=20,
+                minimum_capacity_class=CapacityClass.HEAVY,
+                recommended_capacity_class=CapacityClass.SYNTHESIS,
+                context_budget_tokens=32768,
+                expected_artifact_count=4,
+                expected_artifact_bytes=2097152,
+                model_quality_floor="strong",
+                validation_level=ValidationLevel.STRUCTURAL,
+                reducer_credibility="high",
+                synthesizer_credibility="high",
             ),
         ]
     else:
@@ -255,6 +323,16 @@ def build_plan(
                 recommended_max_tokens=budgets["direct"],
                 minimum_max_tokens=min(512, budgets["direct"]),
                 expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
+                minimum_capacity_class=CapacityClass.MICRO,
+                recommended_capacity_class=(
+                    CapacityClass.STANDARD if coding else CapacityClass.MICRO
+                ),
+                context_budget_tokens=int(requirements["desired_context_tokens"]),
+                expected_artifact_bytes=262144 if coding else 65536,
+                model_quality_floor="coding" if coding else "baseline",
+                required_tools=["repository"] if coding else [],
+                requires_repository=coding,
+                validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
             )
         ]
 
