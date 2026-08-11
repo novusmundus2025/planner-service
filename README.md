@@ -77,24 +77,28 @@ plan with `planner_provider` set to `deterministic`.
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
+python -m pip install --require-hashes -r requirements-dev.txt
+python -m pip install --no-deps -e .
 python -m uvicorn mundusx_planner_service.api:app --reload --port 8091
 ```
 
 Run tests:
 
 ```powershell
-python -m unittest discover -s tests
+python -m pytest -q
 ```
 
 ## Railway Deployment
 
 Railpack reads the repository-root `railpack.json`. It starts Uvicorn on
 `0.0.0.0` and Railway's injected `PORT`, with `8091` as the local fallback.
-The root `requirements.txt` gives Railpack's pip provider the production
-dependencies directly. The start command uses `--app-dir src`, so the package
-does not need to be built before the source layer is copied into the runtime
-image.
+The hash-locked root `requirements.txt` gives Railpack's pip provider the
+production dependencies directly. `requirements-dev.txt` contains the same
+runtime resolution plus the development tools. Regenerate both files from
+`pyproject.toml` with `uv pip compile --generate-hashes --universal` and review
+the resolved changes before adoption. The start command uses `--app-dir src`,
+so the package does not need to be built before the source layer is copied into
+the runtime image.
 
 ## Control Plane Integration
 
