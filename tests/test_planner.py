@@ -30,6 +30,7 @@ class PlannerTests(unittest.TestCase):
                 request_id="req-2",
                 prompt="Refactor this Rust code and add tests for the scheduler.",
                 model="qwen",
+                available_capability_summary={"eligible_nodes": 3, "eligible_parallel_slots": 3},
             )
         )
 
@@ -37,9 +38,8 @@ class PlannerTests(unittest.TestCase):
             [node["id"] for node in response.graph["nodes"]],
             [
                 "scope",
-                "chunk-foundations",
-                "chunk-developments",
-                "chunk-impact",
+                "work-implementation",
+                "work-tests",
                 "reduce",
                 "synthesize",
             ],
@@ -67,7 +67,9 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(coding_step["validation_level"], "syntax")
         self.assertGreaterEqual(coding_step["context_budget_tokens"], 8192)
         self.assertTrue(response.graph["execution_policy"]["preserve_completed_outputs"])
-        self.assertEqual(response.graph["execution_policy"]["result_protocol"], "artifact_manifest_v1")
+        self.assertEqual(
+            response.graph["execution_policy"]["result_protocol"], "artifact_manifest_v1"
+        )
         self.assertEqual(reducer["max_input_artifacts"], 20)
         self.assertIn("patch", synth["expected_artifact_types"])
         self.assertEqual(response.graph["nodes"][1]["artifact_targets"], ["implementation"])
@@ -80,6 +82,7 @@ class PlannerTests(unittest.TestCase):
             PlanRequest(
                 request_id="req-history",
                 prompt="Give me a detailed history of the European Union.",
+                available_capability_summary={"eligible_nodes": 3, "eligible_parallel_slots": 3},
             )
         )
 
@@ -97,6 +100,45 @@ class PlannerTests(unittest.TestCase):
             response.graph["nodes"][1]["preferred_roles"][0],
             "chunk_analysis",
         )
+
+    def test_live_capacity_bounds_dynamic_workstreams(self):
+        response = deterministic_plan(
+            PlanRequest(
+                request_id="req-crud",
+                prompt=(
+                    "Implement a Node.js CRUD API with tests, Markdown documentation, "
+                    "and a code review."
+                ),
+                available_capability_summary={"eligible_nodes": 2, "eligible_parallel_slots": 2},
+            )
+        )
+
+        self.assertEqual(
+            [node["id"] for node in response.graph["nodes"]],
+            [
+                "scope",
+                "work-implementation",
+                "work-tests",
+                "work-documentation",
+                "work-review",
+                "reduce",
+                "synthesize",
+            ],
+        )
+        self.assertNotIn("chunk-foundations", [node["id"] for node in response.graph["nodes"]])
+        self.assertEqual(response.graph["nodes"][1]["allowed_parallelism"], 2)
+        self.assertEqual(response.graph["nodes"][4]["depends_on"], ["work-implementation"])
+
+    def test_one_live_slot_avoids_artificial_fanout(self):
+        response = deterministic_plan(
+            PlanRequest(
+                request_id="req-one-slot",
+                prompt="Implement a Node.js CRUD API with tests and documentation.",
+                available_capability_summary={"eligible_nodes": 1, "eligible_parallel_slots": 1},
+            )
+        )
+
+        self.assertEqual([node["id"] for node in response.graph["nodes"]], ["execute"])
 
     def test_modality_requirements_are_inferred(self):
         response = deterministic_plan(
