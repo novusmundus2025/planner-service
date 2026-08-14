@@ -6,10 +6,10 @@ from collections.abc import Iterable
 from .models import (
     CapacityClass,
     NodeRole,
-    PlanRequest,
-    PlanResponse,
     PlannerProvider,
     PlannerStatus,
+    PlanRequest,
+    PlanResponse,
     PlanStep,
     TaskType,
     ValidationLevel,
@@ -82,21 +82,33 @@ def infer_requirements(request: PlanRequest, task_type: TaskType) -> dict[str, o
 
 def should_decompose(request: PlanRequest, task_type: TaskType) -> bool:
     normalized = request.prompt.lower()
+    coding_deliverable_groups = (
+        ["implement", "create", "build", "generate", "refactor", "new feature"],
+        ["test", "tests", "testing", "regression"],
+        ["documentation", "docs", "readme", "markdown"],
+        ["review", "audit", "security"],
+    )
+    requested_coding_deliverables = sum(
+        _contains_any(normalized, group) for group in coding_deliverable_groups
+    )
     return (
         len(request.prompt) > 2000
         or task_type is TaskType.DOCUMENT
         or (
             task_type is TaskType.CODING
-            and _contains_any(
-                normalized,
-                [
-                    "refactor",
-                    "add tests",
-                    "multiple files",
-                    "entire repository",
-                    "new feature",
-                    "implement",
-                ],
+            and (
+                requested_coding_deliverables >= 2
+                or _contains_any(
+                    normalized,
+                    [
+                        "refactor",
+                        "add tests",
+                        "multiple files",
+                        "entire repository",
+                        "new feature",
+                        "implement",
+                    ],
+                )
             )
         )
         or _contains_any(
@@ -153,6 +165,307 @@ def output_budget_profile(request: PlanRequest, task_type: TaskType) -> dict[str
     }
 
 
+def _live_parallel_width(request: PlanRequest) -> int:
+    summary = request.available_capability_summary
+    slots = summary.get("eligible_parallel_slots", summary.get("eligible_nodes", 1))
+    try:
+        return max(1, min(6, int(slots)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _requested_workstreams(request: PlanRequest, task_type: TaskType) -> list[tuple[str, str, str]]:
+    """Return prompt-specific responsibilities, not presentation section templates."""
+    prompt = request.prompt.lower()
+    streams: list[tuple[str, str, str]] = []
+
+    if task_type is TaskType.CODING:
+        streams.append(
+            (
+                "implementation",
+                "Implement the requested behavior",
+                "Complete runnable source or a repository-ready patch satisfying the core request.",
+            )
+        )
+        if _contains_any(prompt, ["test", "tests", "testing", "regression"]):
+            streams.append(
+                (
+                    "tests",
+                    "Design and implement verification",
+                    "Focused automated tests and the commands or evidence needed "
+                    "to verify behavior.",
+                )
+            )
+        if _contains_any(prompt, ["documentation", "docs", "readme", "markdown"]):
+            streams.append(
+                (
+                    "documentation",
+                    "Document the delivered interface",
+                    "User-facing Markdown documentation aligned with the implementation.",
+                )
+            )
+        if _contains_any(prompt, ["review", "code review", "audit"]):
+            streams.append(
+                (
+                    "review",
+                    "Review correctness and maintainability",
+                    "Specific findings, risks, and fixes grounded in the delivered implementation.",
+                )
+            )
+        if _contains_any(prompt, ["security", "threat", "vulnerability"]):
+            streams.append(
+                (
+                    "security",
+                    "Assess security properties",
+                    "Threat-focused findings and concrete mitigations for the "
+                    "requested implementation.",
+                )
+            )
+        return streams
+
+    if _contains_any(prompt, ["compare", "versus", " vs "]):
+        streams.extend(
+            [
+                (
+                    "criteria",
+                    "Define decision criteria",
+                    "Criteria tied directly to the user's decision.",
+                ),
+                (
+                    "evidence",
+                    "Compare the alternatives",
+                    "Evidence for each alternative against the criteria.",
+                ),
+                (
+                    "tradeoffs",
+                    "Evaluate tradeoffs",
+                    "A balanced recommendation with material disadvantages.",
+                ),
+            ]
+        )
+    elif _contains_any(prompt, ["history", "timeline", "to date"]):
+        streams.extend(
+            [
+                (
+                    "origins",
+                    "Establish origins and context",
+                    "Verified origins and initial context.",
+                ),
+                (
+                    "developments",
+                    "Trace material developments",
+                    "Major turning points supported by evidence.",
+                ),
+                (
+                    "current-state",
+                    "Assess the current state",
+                    "Current position and material implications.",
+                ),
+            ]
+        )
+    elif task_type is TaskType.DOCUMENT:
+        streams.extend(
+            [
+                (
+                    "extract",
+                    "Extract the material content",
+                    "Accurate facts and requirements from the document.",
+                ),
+                (
+                    "analyze",
+                    "Analyze the requested issues",
+                    "Findings tied to the source material.",
+                ),
+                (
+                    "verify",
+                    "Check completeness and conflicts",
+                    "Missing, conflicting, or uncertain points.",
+                ),
+            ]
+        )
+    else:
+        streams.extend(
+            [
+                ("answer", "Develop the core answer", "A direct answer grounded in the request."),
+                (
+                    "verify",
+                    "Verify facts and assumptions",
+                    "Corrections, evidence, and uncertainty boundaries.",
+                ),
+                (
+                    "implications",
+                    "Assess implications and tradeoffs",
+                    "Material consequences and tradeoffs.",
+                ),
+            ]
+        )
+    return streams
+
+
+def _build_adaptive_steps(
+    request: PlanRequest,
+    task_type: TaskType,
+    requirements: dict[str, object],
+    budgets: dict[str, int],
+) -> list[PlanStep]:
+    execution_role = NodeRole(requirements["preferred_roles"][0])
+    coding = task_type is TaskType.CODING
+    width = _live_parallel_width(request)
+    workstreams = _requested_workstreams(request, task_type)
+
+    # A one-slot cluster gains nothing from artificial fan-out. The scheduler can
+    # reconsider a new request as soon as more capacity joins.
+    if width <= 1:
+        return [
+            PlanStep(
+                id="execute",
+                name="Execute request",
+                responsibility="Answer the complete request",
+                required_output="One complete final answer satisfying every requested deliverable.",
+                reason="The live cluster exposes one eligible parallel slot.",
+                preferred_roles=[execution_role],
+                required_role=execution_role,
+                recommended_max_tokens=budgets["direct"],
+                minimum_max_tokens=min(512, budgets["direct"]),
+                expected_artifact_types=["code", "patch", "command"] if coding else ["text"],
+                minimum_capacity_class=CapacityClass.MICRO,
+                recommended_capacity_class=CapacityClass.STANDARD,
+                context_budget_tokens=int(requirements["desired_context_tokens"]),
+                model_quality_floor="coding" if coding else "baseline",
+                required_tools=["repository"] if coding else [],
+                requires_repository=coding,
+                validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
+            )
+        ]
+
+    steps = [
+        PlanStep(
+            id="scope",
+            name="Scope request",
+            responsibility=(
+                "Identify required deliverables, constraints, and acceptance conditions."
+            ),
+            required_output="A concise scope contract shared by downstream work.",
+            reason="A shared scope prevents independent workers from diverging.",
+            preferred_roles=[NodeRole.BATCH],
+            required_role=NodeRole.BATCH,
+            fallback_roles=[execution_role],
+            recommended_max_tokens=budgets["scope"],
+            minimum_max_tokens=256,
+            expected_artifact_types=["structured_data"],
+            minimum_capacity_class=CapacityClass.MICRO,
+            recommended_capacity_class=CapacityClass.STANDARD,
+            context_budget_tokens=4096,
+            validation_level=ValidationLevel.STRUCTURAL,
+        )
+    ]
+
+    selected = workstreams
+    for stream_id, name, required_output in selected:
+        is_tests = stream_id == "tests"
+        dependencies = ["scope"]
+        if stream_id in {"review", "security"} and any(
+            existing.id == "work-implementation" for existing in steps
+        ):
+            dependencies = ["work-implementation"]
+        steps.append(
+            PlanStep(
+                id=f"work-{stream_id}",
+                name=name,
+                responsibility=stream_id,
+                required_output=required_output,
+                reason="The planner derived this responsibility from the requested deliverables.",
+                depends_on=dependencies,
+                preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
+                required_role=NodeRole.CHUNK_ANALYSIS,
+                fallback_roles=[NodeRole.BATCH, execution_role],
+                recommended_max_tokens=budgets["chunk"],
+                minimum_max_tokens=384,
+                expected_artifact_types=["code", "patch", "test_report"] if coding else ["text"],
+                artifact_targets=[stream_id] if coding else [],
+                minimum_capacity_class=CapacityClass.STANDARD,
+                recommended_capacity_class=CapacityClass.PERFORMANCE,
+                context_budget_tokens=8192,
+                expected_artifact_bytes=262144,
+                model_quality_floor="coding" if coding else "baseline",
+                required_tools=["repository", "test"]
+                if is_tests
+                else (["repository"] if coding else []),
+                requires_repository=coding,
+                requires_tests=is_tests,
+                validation_level=(
+                    ValidationLevel.TEST
+                    if is_tests
+                    else ValidationLevel.SYNTAX
+                    if coding
+                    else ValidationLevel.STRUCTURAL
+                ),
+                allowed_parallelism=width,
+            )
+        )
+
+    dependencies = [step.id for step in steps if step.id.startswith("work-")]
+    steps.append(
+        PlanStep(
+            id="reduce",
+            name="Validate and reduce partial results",
+            responsibility="reduce",
+            required_output="A deduplicated, conflict-checked set of accepted results.",
+            reason="Independent results require validation before final synthesis.",
+            depends_on=dependencies,
+            preferred_roles=[NodeRole.REDUCER],
+            required_role=NodeRole.REDUCER,
+            recommended_max_tokens=budgets["reduce"],
+            minimum_max_tokens=768,
+            unavailable_timeout_seconds=60,
+            on_unavailable="preserve_chunks_and_degrade",
+            expected_artifact_types=["code", "patch", "command", "test_report"]
+            if coding
+            else ["text"],
+            max_input_artifacts=20,
+            minimum_capacity_class=CapacityClass.PERFORMANCE,
+            recommended_capacity_class=CapacityClass.HEAVY,
+            context_budget_tokens=16384,
+            expected_artifact_count=len(dependencies),
+            expected_artifact_bytes=1048576,
+            model_quality_floor="strong",
+            validation_level=ValidationLevel.STRUCTURAL,
+            reducer_credibility="high",
+            synthesizer_credibility="high",
+        )
+    )
+    steps.append(
+        PlanStep(
+            id="synthesize",
+            name="Synthesize final answer",
+            responsibility="synthesize",
+            required_output="One coherent final answer satisfying the original request.",
+            reason="Synthesis converts validated results into the client response.",
+            depends_on=["reduce"],
+            preferred_roles=[NodeRole.SYNTHESIZER],
+            required_role=NodeRole.SYNTHESIZER,
+            recommended_max_tokens=budgets["synthesize"],
+            minimum_max_tokens=1024,
+            unavailable_timeout_seconds=60,
+            on_unavailable="preserve_reduction_and_degrade",
+            expected_artifact_types=["code", "patch", "command", "test_report"]
+            if coding
+            else ["text"],
+            max_input_artifacts=20,
+            minimum_capacity_class=CapacityClass.HEAVY,
+            recommended_capacity_class=CapacityClass.SYNTHESIS,
+            context_budget_tokens=32768,
+            expected_artifact_count=len(dependencies) + 1,
+            expected_artifact_bytes=2097152,
+            model_quality_floor="strong",
+            validation_level=ValidationLevel.STRUCTURAL,
+            reducer_credibility="high",
+            synthesizer_credibility="high",
+        )
+    )
+    return steps
+
+
 def build_plan(
     request: PlanRequest,
     task_type: TaskType,
@@ -166,150 +479,7 @@ def build_plan(
     coding = task_type is TaskType.CODING
 
     if complex_request:
-        execution_role = NodeRole(requirements["preferred_roles"][0])
-        steps = [
-            PlanStep(
-                id="scope",
-                name="Scope request",
-                responsibility="Identify the required work, constraints, and expected output.",
-                required_output="A concise scope summary and acceptance checklist.",
-                reason="Complex requests need a bounded scope before distributed execution.",
-                preferred_roles=[NodeRole.BATCH],
-                required_role=NodeRole.BATCH,
-                fallback_roles=[execution_role],
-                recommended_max_tokens=budgets["scope"],
-                minimum_max_tokens=256,
-                expected_artifact_types=["structured_data"],
-                minimum_capacity_class=CapacityClass.MICRO,
-                recommended_capacity_class=CapacityClass.STANDARD,
-                context_budget_tokens=4096,
-                validation_level=ValidationLevel.STRUCTURAL,
-                allowed_parallelism=1,
-            ),
-            PlanStep(
-                id="chunk-foundations",
-                name="Analyze foundations",
-                responsibility="chunk_analysis",
-                required_output="Evidence-backed findings about origins, foundations, and context.",
-                reason="A bounded responsibility can run independently on a contributor.",
-                depends_on=["scope"],
-                preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
-                required_role=NodeRole.CHUNK_ANALYSIS,
-                fallback_roles=[NodeRole.BATCH, execution_role],
-                recommended_max_tokens=budgets["chunk"],
-                minimum_max_tokens=384,
-                expected_artifact_types=["code", "patch"] if coding_request else ["text"],
-                artifact_targets=["implementation"] if coding_request else [],
-                minimum_capacity_class=CapacityClass.STANDARD,
-                recommended_capacity_class=CapacityClass.PERFORMANCE,
-                context_budget_tokens=8192,
-                expected_artifact_bytes=262144,
-                model_quality_floor="coding" if coding else "baseline",
-                required_tools=["repository"] if coding else [],
-                requires_repository=coding,
-                validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
-                allowed_parallelism=3,
-            ),
-            PlanStep(
-                id="chunk-developments",
-                name="Analyze major developments",
-                responsibility="chunk_analysis",
-                required_output="Evidence-backed findings about major developments and turning points.",
-                reason="Independent analysis enables parallel contributor execution.",
-                depends_on=["scope"],
-                preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
-                required_role=NodeRole.CHUNK_ANALYSIS,
-                fallback_roles=[NodeRole.BATCH, execution_role],
-                recommended_max_tokens=budgets["chunk"],
-                minimum_max_tokens=384,
-                expected_artifact_types=["code", "patch"] if coding_request else ["text"],
-                artifact_targets=["tests"] if coding_request else [],
-                minimum_capacity_class=CapacityClass.STANDARD,
-                recommended_capacity_class=CapacityClass.PERFORMANCE,
-                context_budget_tokens=8192,
-                expected_artifact_bytes=262144,
-                model_quality_floor="coding" if coding else "baseline",
-                required_tools=["repository"] if coding else [],
-                requires_repository=coding,
-                validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
-                allowed_parallelism=3,
-            ),
-            PlanStep(
-                id="chunk-impact",
-                name="Analyze outcomes and current impact",
-                responsibility="chunk_analysis",
-                required_output="Evidence-backed findings about outcomes, implications, and current state.",
-                reason="A separate responsibility improves coverage before reduction.",
-                depends_on=["scope"],
-                preferred_roles=[NodeRole.CHUNK_ANALYSIS, execution_role],
-                required_role=NodeRole.CHUNK_ANALYSIS,
-                fallback_roles=[NodeRole.BATCH, execution_role],
-                recommended_max_tokens=budgets["chunk"],
-                minimum_max_tokens=384,
-                expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
-                artifact_targets=["integration", "documentation"] if coding_request else [],
-                minimum_capacity_class=CapacityClass.STANDARD,
-                recommended_capacity_class=CapacityClass.PERFORMANCE,
-                context_budget_tokens=8192,
-                expected_artifact_bytes=262144,
-                model_quality_floor="coding" if coding else "baseline",
-                required_tools=["repository", "test"] if coding else [],
-                requires_repository=coding,
-                requires_tests=coding,
-                validation_level=ValidationLevel.TEST if coding else ValidationLevel.STRUCTURAL,
-                allowed_parallelism=3,
-            ),
-            PlanStep(
-                id="reduce",
-                name="Reduce partial results",
-                responsibility="reduce",
-                required_output="A deduplicated, ordered set of accepted findings.",
-                reason="Reduction controls context size and removes conflicts before synthesis.",
-                depends_on=["chunk-foundations", "chunk-developments", "chunk-impact"],
-                preferred_roles=[NodeRole.REDUCER],
-                required_role=NodeRole.REDUCER,
-                recommended_max_tokens=budgets["reduce"],
-                minimum_max_tokens=768,
-                unavailable_timeout_seconds=60,
-                on_unavailable="preserve_chunks_and_degrade",
-                expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
-                max_input_artifacts=20,
-                minimum_capacity_class=CapacityClass.PERFORMANCE,
-                recommended_capacity_class=CapacityClass.HEAVY,
-                context_budget_tokens=16384,
-                expected_artifact_count=3,
-                expected_artifact_bytes=1048576,
-                model_quality_floor="strong",
-                validation_level=ValidationLevel.STRUCTURAL,
-                reducer_credibility="high",
-                synthesizer_credibility="high",
-            ),
-            PlanStep(
-                id="synthesize",
-                name="Synthesize final answer",
-                responsibility="synthesize",
-                required_output="One coherent final answer that satisfies the original request.",
-                reason="Synthesis converts accepted reduced findings into the client response.",
-                depends_on=["reduce"],
-                preferred_roles=[NodeRole.SYNTHESIZER],
-                required_role=NodeRole.SYNTHESIZER,
-                recommended_max_tokens=budgets["synthesize"],
-                minimum_max_tokens=1024,
-                unavailable_timeout_seconds=60,
-                on_unavailable="preserve_reduction_and_degrade",
-                expected_artifact_types=["code", "patch", "command", "test_report"] if coding_request else ["text"],
-                max_input_artifacts=20,
-                minimum_capacity_class=CapacityClass.HEAVY,
-                recommended_capacity_class=CapacityClass.SYNTHESIS,
-                context_budget_tokens=32768,
-                expected_artifact_count=4,
-                expected_artifact_bytes=2097152,
-                model_quality_floor="strong",
-                validation_level=ValidationLevel.STRUCTURAL,
-                reducer_credibility="high",
-                synthesizer_credibility="high",
-            ),
-        ]
+        steps = _build_adaptive_steps(request, task_type, requirements, budgets)
     else:
         steps = [
             PlanStep(
@@ -322,7 +492,9 @@ def build_plan(
                 required_role=NodeRole(requirements["preferred_roles"][0]),
                 recommended_max_tokens=budgets["direct"],
                 minimum_max_tokens=min(512, budgets["direct"]),
-                expected_artifact_types=["code", "patch", "command"] if coding_request else ["text"],
+                expected_artifact_types=["code", "patch", "command"]
+                if coding_request
+                else ["text"],
                 minimum_capacity_class=CapacityClass.MICRO,
                 recommended_capacity_class=(
                     CapacityClass.STANDARD if coding else CapacityClass.MICRO
@@ -339,9 +511,7 @@ def build_plan(
     graph = {
         "nodes": [step.to_dict() for step in steps],
         "edges": [
-            {"from": dependency, "to": step.id}
-            for step in steps
-            for dependency in step.depends_on
+            {"from": dependency, "to": step.id} for step in steps for dependency in step.depends_on
         ],
         "execution_policy": {
             "role_matching": "required",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from .models import PlanRequest, PlanResponse, PlannerProvider, TaskType
+from .models import PlannerProvider, PlanRequest, PlanResponse, TaskType
 from .planner import build_plan, classify_task, infer_requirements
 
 
