@@ -174,6 +174,63 @@ def _live_parallel_width(request: PlanRequest) -> int:
         return 1
 
 
+def _strongest_live_capacity(request: PlanRequest) -> CapacityClass:
+    counts = request.available_capability_summary.get("capacity_class_counts", {})
+    ordered = [
+        CapacityClass.SERVER,
+        CapacityClass.SYNTHESIS,
+        CapacityClass.HEAVY,
+        CapacityClass.PERFORMANCE,
+        CapacityClass.STANDARD,
+        CapacityClass.MICRO,
+    ]
+    if not isinstance(counts, dict) or not counts:
+        return CapacityClass.HEAVY
+    for capacity in ordered:
+        try:
+            if int(counts.get(capacity.value, 0)) > 0:
+                return capacity
+        except (TypeError, ValueError):
+            continue
+    return CapacityClass.MICRO
+
+
+def _capacity_at_least(value: CapacityClass, threshold: CapacityClass) -> bool:
+    order = {
+        CapacityClass.MICRO: 0,
+        CapacityClass.STANDARD: 1,
+        CapacityClass.PERFORMANCE: 2,
+        CapacityClass.HEAVY: 3,
+        CapacityClass.SYNTHESIS: 4,
+        CapacityClass.SERVER: 5,
+    }
+    return order[value] >= order[threshold]
+
+
+def _prompt_requires_repository(prompt: str) -> bool:
+    return _contains_any(
+        prompt.lower(),
+        [
+            "repository",
+            " repo ",
+            "codebase",
+            "workspace",
+            "existing project",
+            "project files",
+        ],
+    )
+
+
+def _live_tool_available(request: PlanRequest, tool: str) -> bool:
+    counts = request.available_capability_summary.get("tool_counts", {})
+    if not isinstance(counts, dict):
+        return False
+    try:
+        return int(counts.get(tool, 0)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _requested_workstreams(request: PlanRequest, task_type: TaskType) -> list[tuple[str, str, str]]:
     """Return prompt-specific responsibilities, not presentation section templates."""
     prompt = request.prompt.lower()
@@ -311,6 +368,28 @@ def _build_adaptive_steps(
     execution_role = NodeRole(requirements["preferred_roles"][0])
     coding = task_type is TaskType.CODING
     width = _live_parallel_width(request)
+    strongest_capacity = _strongest_live_capacity(request)
+    work_capacity = (
+        CapacityClass.STANDARD
+        if _capacity_at_least(strongest_capacity, CapacityClass.STANDARD)
+        else CapacityClass.MICRO
+    )
+    reducer_capacity = (
+        CapacityClass.PERFORMANCE
+        if _capacity_at_least(strongest_capacity, CapacityClass.PERFORMANCE)
+        else work_capacity
+    )
+    synthesis_capacity = (
+        CapacityClass.HEAVY
+        if _capacity_at_least(strongest_capacity, CapacityClass.HEAVY)
+        else reducer_capacity
+    )
+    max_context = request.available_capability_summary.get("max_context_tokens", 0)
+    try:
+        work_context = max(2048, min(8192, int(max_context))) if int(max_context) > 0 else 8192
+    except (TypeError, ValueError):
+        work_context = 8192
+    repository_required = coding and _prompt_requires_repository(request.prompt)
     workstreams = _requested_workstreams(request, task_type)
 
     # A one-slot cluster gains nothing from artificial fan-out. The scheduler can
@@ -332,8 +411,8 @@ def _build_adaptive_steps(
                 recommended_capacity_class=CapacityClass.STANDARD,
                 context_budget_tokens=int(requirements["desired_context_tokens"]),
                 model_quality_floor="coding" if coding else "baseline",
-                required_tools=["repository"] if coding else [],
-                requires_repository=coding,
+                required_tools=["repository"] if repository_required else [],
+                requires_repository=repository_required,
                 validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
             )
         ]
@@ -383,15 +462,16 @@ def _build_adaptive_steps(
                 minimum_max_tokens=384,
                 expected_artifact_types=["code", "patch", "test_report"] if coding else ["text"],
                 artifact_targets=[stream_id] if coding else [],
-                minimum_capacity_class=CapacityClass.STANDARD,
+                minimum_capacity_class=work_capacity,
                 recommended_capacity_class=CapacityClass.PERFORMANCE,
-                context_budget_tokens=8192,
+                context_budget_tokens=work_context,
                 expected_artifact_bytes=262144,
                 model_quality_floor="coding" if coding else "baseline",
-                required_tools=["repository", "test"]
-                if is_tests
-                else (["repository"] if coding else []),
-                requires_repository=coding,
+                required_tools=(
+                    (["repository"] if repository_required else [])
+                    + (["test"] if is_tests and _live_tool_available(request, "test") else [])
+                ),
+                requires_repository=repository_required,
                 requires_tests=is_tests,
                 validation_level=(
                     ValidationLevel.TEST
@@ -423,7 +503,7 @@ def _build_adaptive_steps(
             if coding
             else ["text"],
             max_input_artifacts=20,
-            minimum_capacity_class=CapacityClass.PERFORMANCE,
+            minimum_capacity_class=reducer_capacity,
             recommended_capacity_class=CapacityClass.HEAVY,
             context_budget_tokens=16384,
             expected_artifact_count=len(dependencies),
@@ -452,7 +532,7 @@ def _build_adaptive_steps(
             if coding
             else ["text"],
             max_input_artifacts=20,
-            minimum_capacity_class=CapacityClass.HEAVY,
+            minimum_capacity_class=synthesis_capacity,
             recommended_capacity_class=CapacityClass.SYNTHESIS,
             context_budget_tokens=32768,
             expected_artifact_count=len(dependencies) + 1,
@@ -502,8 +582,10 @@ def build_plan(
                 context_budget_tokens=int(requirements["desired_context_tokens"]),
                 expected_artifact_bytes=262144 if coding else 65536,
                 model_quality_floor="coding" if coding else "baseline",
-                required_tools=["repository"] if coding else [],
-                requires_repository=coding,
+                required_tools=["repository"]
+                if coding and _prompt_requires_repository(request.prompt)
+                else [],
+                requires_repository=coding and _prompt_requires_repository(request.prompt),
                 validation_level=ValidationLevel.SYNTAX if coding else ValidationLevel.STRUCTURAL,
             )
         ]

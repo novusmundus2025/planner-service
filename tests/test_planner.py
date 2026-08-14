@@ -63,7 +63,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(synth["recommended_capacity_class"], "synthesis")
         self.assertEqual(synth["synthesizer_credibility"], "high")
         coding_step = response.graph["nodes"][1]
-        self.assertTrue(coding_step["requires_repository"])
+        self.assertFalse(coding_step["requires_repository"])
         self.assertEqual(coding_step["validation_level"], "syntax")
         self.assertGreaterEqual(coding_step["context_budget_tokens"], 8192)
         self.assertTrue(response.graph["execution_policy"]["preserve_completed_outputs"])
@@ -129,6 +129,34 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(response.graph["nodes"][1]["allowed_parallelism"], 2)
         self.assertEqual(response.graph["nodes"][4]["depends_on"], ["work-implementation"])
 
+    def test_micro_cluster_gets_feasible_standalone_generation_stages(self):
+        response = deterministic_plan(
+            PlanRequest(
+                request_id="req-micro-crud",
+                prompt=(
+                    "Create a Node.js Express CRUD API with Markdown documentation "
+                    "and a code review."
+                ),
+                available_capability_summary={
+                    "eligible_nodes": 2,
+                    "eligible_parallel_slots": 2,
+                    "max_context_tokens": 4096,
+                    "capacity_class_counts": {"micro": 2},
+                    "tool_counts": {},
+                },
+            )
+        )
+
+        implementation = response.graph["nodes"][1]
+        reducer = response.graph["nodes"][-2]
+        synthesis = response.graph["nodes"][-1]
+        self.assertEqual(implementation["minimum_capacity_class"], "micro")
+        self.assertEqual(implementation["context_budget_tokens"], 4096)
+        self.assertFalse(implementation["requires_repository"])
+        self.assertEqual(implementation["required_tools"], [])
+        self.assertEqual(reducer["minimum_capacity_class"], "micro")
+        self.assertEqual(synthesis["minimum_capacity_class"], "micro")
+
     def test_one_live_slot_avoids_artificial_fanout(self):
         response = deterministic_plan(
             PlanRequest(
@@ -163,9 +191,28 @@ class PlannerTests(unittest.TestCase):
         step = response.graph["nodes"][0]
         self.assertEqual(step["minimum_capacity_class"], "micro")
         self.assertEqual(step["recommended_capacity_class"], "standard")
-        self.assertTrue(step["requires_repository"])
+        self.assertFalse(step["requires_repository"])
         self.assertEqual(step["model_quality_floor"], "coding")
         self.assertLessEqual(step["expected_artifact_bytes"], 262144)
+
+    def test_repository_bound_request_requires_repository_tool(self):
+        response = deterministic_plan(
+            PlanRequest(
+                request_id="req-repository",
+                prompt="Refactor the scheduler in this repository and add tests.",
+                available_capability_summary={
+                    "eligible_nodes": 2,
+                    "eligible_parallel_slots": 2,
+                    "tool_counts": {"repository": 1, "test": 1},
+                },
+            )
+        )
+
+        implementation = response.graph["nodes"][1]
+        tests = response.graph["nodes"][2]
+        self.assertTrue(implementation["requires_repository"])
+        self.assertIn("repository", implementation["required_tools"])
+        self.assertIn("test", tests["required_tools"])
 
     def test_plan_request_can_force_deterministic_engine(self):
         previous = os.environ.get("MUNDUSX_PLANNER_ENGINE")
