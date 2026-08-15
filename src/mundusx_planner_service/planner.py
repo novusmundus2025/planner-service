@@ -195,6 +195,15 @@ def _strongest_live_capacity(request: PlanRequest) -> CapacityClass:
     return CapacityClass.MICRO
 
 
+def _live_max_context(request: PlanRequest, default: int = 8192) -> int:
+    value = request.available_capability_summary.get("max_context_tokens", 0)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(2048, parsed) if parsed > 0 else default
+
+
 def _capacity_at_least(value: CapacityClass, threshold: CapacityClass) -> bool:
     order = {
         CapacityClass.MICRO: 0,
@@ -384,11 +393,11 @@ def _build_adaptive_steps(
         if _capacity_at_least(strongest_capacity, CapacityClass.HEAVY)
         else reducer_capacity
     )
-    max_context = request.available_capability_summary.get("max_context_tokens", 0)
-    try:
-        work_context = max(2048, min(8192, int(max_context))) if int(max_context) > 0 else 8192
-    except (TypeError, ValueError):
-        work_context = 8192
+    max_context = _live_max_context(request)
+    scope_context = min(4096, max_context)
+    work_context = min(8192, max_context)
+    reducer_context = min(16384, max_context)
+    synthesis_context = min(32768, max_context)
     repository_required = coding and _prompt_requires_repository(request.prompt)
     workstreams = _requested_workstreams(request, task_type)
 
@@ -434,7 +443,7 @@ def _build_adaptive_steps(
             expected_artifact_types=["structured_data"],
             minimum_capacity_class=CapacityClass.MICRO,
             recommended_capacity_class=CapacityClass.STANDARD,
-            context_budget_tokens=4096,
+            context_budget_tokens=scope_context,
             validation_level=ValidationLevel.STRUCTURAL,
         )
     ]
@@ -505,7 +514,7 @@ def _build_adaptive_steps(
             max_input_artifacts=20,
             minimum_capacity_class=reducer_capacity,
             recommended_capacity_class=CapacityClass.HEAVY,
-            context_budget_tokens=16384,
+            context_budget_tokens=reducer_context,
             expected_artifact_count=len(dependencies),
             expected_artifact_bytes=1048576,
             model_quality_floor="strong",
@@ -534,7 +543,7 @@ def _build_adaptive_steps(
             max_input_artifacts=20,
             minimum_capacity_class=synthesis_capacity,
             recommended_capacity_class=CapacityClass.SYNTHESIS,
-            context_budget_tokens=32768,
+            context_budget_tokens=synthesis_context,
             expected_artifact_count=len(dependencies) + 1,
             expected_artifact_bytes=2097152,
             model_quality_floor="strong",
