@@ -156,6 +156,30 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(implementation["required_tools"], [])
         self.assertEqual(reducer["minimum_capacity_class"], "micro")
         self.assertEqual(synthesis["minimum_capacity_class"], "micro")
+        self.assertEqual(reducer["context_budget_tokens"], 4096)
+        self.assertEqual(synthesis["context_budget_tokens"], 4096)
+
+    def test_reduce_and_synthesis_context_are_bounded_by_live_cluster(self):
+        response = deterministic_plan(
+            PlanRequest(
+                request_id="req-context-bounded",
+                prompt="Create a detailed history from origins through today.",
+                available_capability_summary={
+                    "eligible_nodes": 2,
+                    "eligible_parallel_slots": 2,
+                    "max_context_tokens": 16384,
+                    "capacity_class_counts": {"micro": 2},
+                },
+            )
+        )
+
+        reducer = response.graph["nodes"][-2]
+        synthesis = response.graph["nodes"][-1]
+        self.assertEqual(reducer["context_budget_tokens"], 16384)
+        self.assertEqual(synthesis["context_budget_tokens"], 16384)
+        self.assertTrue(
+            all(node["context_budget_tokens"] <= 16384 for node in response.graph["nodes"])
+        )
 
     def test_one_live_slot_avoids_artificial_fanout(self):
         response = deterministic_plan(
