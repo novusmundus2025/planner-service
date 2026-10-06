@@ -15,6 +15,7 @@ app = FastAPI(title="MundusX Planner Service", version=__version__)
 class MediaPlanRequest(BaseModel):
     kind: str
     has_reference: bool = False
+    quality: str = "fast"
     duration_seconds: StrictInt | None = None
 
 

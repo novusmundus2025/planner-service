@@ -37,8 +37,12 @@ def media_plan(request: dict[str, Any]) -> dict[str, Any]:
         else:
             if isinstance(seconds, bool) or not isinstance(seconds, int) or not 1 <= seconds <= 10:
                 raise ValueError("Video duration must be an integer from 1 to 10")
-            prefix = "wan22-i2v-lightning-14b" if state["operation"] == "image_to_video" else "wan22-14b"
-            version = "v3" if state["operation"] == "image_to_video" else "v1"
+            quality = item.get("quality", "fast")
+            if quality not in ("fast", "quality"):
+                raise ValueError("Video quality must be fast or quality")
+            i2v = state["operation"] == "image_to_video"
+            prefix = ("wan22-i2v-lightning-14b" if i2v else "wan22-t2v-lightning-14b") if quality == "fast" else ("wan22-i2v-14b" if i2v else "wan22-14b")
+            version = "v3" if i2v and quality == "fast" else "v1"
             profile = f"{prefix}-480p-{seconds * 16 + 1}f-{version}"
         return {**state, "profile_id": profile}
 

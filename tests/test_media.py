@@ -29,3 +29,11 @@ class MediaTests(unittest.TestCase):
                      {"kind": "image", "duration_seconds": 3}):
             with self.assertRaises(ValueError):
                 media_plan(item)
+
+    def test_fast_default_and_quality_modes_match_reference_operation(self):
+        for reference in (False, True):
+            fast=media_plan({"kind":"video","has_reference":reference})
+            quality=media_plan({"kind":"video","has_reference":reference,"quality":"quality"})
+            self.assertIn("lightning",fast["profile_id"])
+            self.assertNotIn("lightning",quality["profile_id"])
+            self.assertIn("480p",quality["profile_id"])
