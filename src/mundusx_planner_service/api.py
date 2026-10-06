@@ -15,7 +15,7 @@ app = FastAPI(title="MundusX Planner Service", version=__version__)
 class MediaPlanRequest(BaseModel):
     kind: str
     has_reference: bool = False
-    quality: str = "fast"
+    quality: str | None = None
     duration_seconds: StrictInt | None = None
 
 
@@ -23,7 +23,12 @@ class MediaPlanRequest(BaseModel):
 def create_media_plan(body: MediaPlanRequest) -> dict[str, Any]:
     from .media import media_plan
     try:
-        return media_plan(body.model_dump(exclude_none=True))
+        payload = body.model_dump(exclude_none=True)
+        # Preserve old callers during coordinated rollout; updated clients send
+        # their explicit fast/quality decision, including the default fast mode.
+        if body.kind == "video" and body.quality is None:
+            payload["quality"] = "fast" if body.has_reference else "quality"
+        return media_plan(payload)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
