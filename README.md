@@ -108,3 +108,17 @@ Rust should use its built-in fallback planner and record planner metadata on the
 The planner declares required roles and unavailable-stage policy, but it never selects
 a live machine. The control plane scheduler enforces those requirements and reports
 runtime degradation.
+# Media routing
+
+`POST /v1/media/plan` uses a dedicated LangGraph path:
+`classify_media -> require_capability -> route_queue`.
+Supply an already detected `kind` (`image` or `video`), optional integer
+`duration_seconds` (1-10, default 3 for video), and `has_reference` for I2V.
+It returns `execution_route: media_queue`, the exact verified profile required,
+and `node_selection_owner: media_scheduler`. It does not create a job or claim
+an LLM vision model can generate media. Chat owns natural-language intent
+detection and user authorization; the media scheduler owns admission, live
+capacity, profile-specific reliability/speed ranking, fairness and fenced leases.
+
+Configure Chat's `MUNDUSX_MEDIA_PLANNER_URL` to this endpoint after deploying it.
+The existing `/v1/plan` remains the LLM orchestration contract.

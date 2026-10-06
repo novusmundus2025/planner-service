@@ -2,14 +2,29 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, StrictInt
 
 from . import __version__
 from .models import PlanRequest
 from .planner import plan_request
 
 app = FastAPI(title="MundusX Planner Service", version=__version__)
+
+
+class MediaPlanRequest(BaseModel):
+    kind: str
+    has_reference: bool = False
+    duration_seconds: StrictInt | None = None
+
+
+@app.post("/v1/media/plan")
+def create_media_plan(body: MediaPlanRequest) -> dict[str, Any]:
+    from .media import media_plan
+    try:
+        return media_plan(body.model_dump(exclude_none=True))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 class PlanRequestBody(BaseModel):
