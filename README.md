@@ -108,3 +108,7 @@ Rust should use its built-in fallback planner and record planner metadata on the
 The planner declares required roles and unavailable-stage policy, but it never selects
 a live machine. The control plane scheduler enforces those requirements and reports
 runtime degradation.
+
+## License
+
+Project-owned source code is licensed under [Apache License 2.0](LICENSE), including commercial use. Third-party components retain their respective licenses and notices.
