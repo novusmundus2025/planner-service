@@ -258,6 +258,7 @@ class PlannerTests(unittest.TestCase):
             PlanRequest(
                 request_id="req-langgraph",
                 prompt="Give me a detailed history of the European Union.",
+                available_capability_summary={"eligible_nodes": 3, "eligible_parallel_slots": 3},
             )
         )
 

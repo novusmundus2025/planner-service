@@ -2,14 +2,37 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, StrictInt
 
 from . import __version__
 from .models import PlanRequest
 from .planner import plan_request
 
 app = FastAPI(title="MundusX Planner Service", version=__version__)
+
+
+class MediaPlanRequest(BaseModel):
+    kind: str
+    has_reference: bool = False
+    quality: str | None = None
+    duration_seconds: StrictInt | None = None
+
+
+@app.post("/v1/media/plan")
+def create_media_plan(body: MediaPlanRequest) -> dict[str, Any]:
+    from .media import media_plan
+
+    try:
+        payload = body.model_dump(exclude_none=True)
+        # Keep the media queue on its default "fast" path unless the caller
+        # explicitly chooses a quality tier. This preserves the compatibility
+        # rollout while staying aligned with the verified default profile.
+        if body.kind == "video" and body.quality is None:
+            payload["quality"] = "fast"
+        return media_plan(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 class PlanRequestBody(BaseModel):
